@@ -1,46 +1,80 @@
 name: AI Shorts Bot
 
 on:
-  workflow_dispatch:       # manual trigger
-  schedule:                # or run on a schedule
+  workflow_dispatch:
+  schedule:
     - cron: '0 */6 * * *'  # every 6 hours (UTC)
 
 env:
-  # Force Node.js 24 (avoid Node 20 deprecation warnings)【26†L47-L55】
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PYTHON_VERSION: '3.11'
 
 jobs:
   ai-upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 60  # ✅ Prevent hanging jobs
 
     steps:
-      # 1. Checkout code
+      # 1. Checkout code with token for API access
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
       # 2. Set up Python 3.11
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'  # ✅ Cache dependencies for faster runs
 
       # 3. Install dependencies
       - name: Install Dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install moviepy[optional] requests edge-tts google-api-python-client oauth2client
 
-      # 4. Run bot script
+      # 4. Create outputs directory (prevent failure)
+      - name: Create Output Directory
+        run: mkdir -p outputs/
+
+      # 5. Run bot script with error handling
       - name: Run AI Bot
-        run: python main.py
+        env:
+          # ✅ Load sensitive data from secrets
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          set -e  # Exit on error
+          python main.py
+        continue-on-error: false
 
-      # 5. Verify outputs (for debugging)
-      - name: List Outputs
-        run: ls -R outputs/
+      # 6. Verify outputs
+      - name: Verify Output Files
+        if: success()
+        run: |
+          if [ -d outputs/ ] && [ "$(ls -A outputs/)" ]; then
+            echo "✅ Output files generated successfully"
+            ls -lh outputs/
+          else
+            echo "⚠️  No output files found"
+            exit 1
+          fi
 
-      # 6. Upload output as artifact (optional)
-      - name: Upload Output
+      # 7. Upload artifact
+      - name: Upload Output Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ai-output
+          name: ai-output-${{ github.run_number }}
           path: outputs/
+          retention-days: 30
+          if-no-files-found: error
+
+      # 8. Notify on failure
+      - name: Notify Failure
+        if: failure()
+        run: |
+          echo "❌ Workflow failed at: $(date)"
+          exit 1
